@@ -128,10 +128,15 @@ def test_stdio_lists_tools_and_calls_health_check():
 
     payload = json.loads(_text(health))
     assert payload["status"] == "ok"
+    # Regression: server chạy stdio thì health_check PHẢI báo stdio, không được
+    # hard-code "streamable-http".
+    assert payload["transport"] == "stdio", (
+        f"health_check nói sai transport khi chạy stdio: {payload['transport']}"
+    )
+    assert payload["endpoint"] is None, "stdio không có endpoint HTTP"
     # KHÔNG khẳng định key phải là False: server nay tự nạp `.env` nên trạng thái
-    # key phụ thuộc môi trường chạy. Test này chỉ kiểm tra transport + health_check.
-    # Hành vi "không có key thì báo False" được kiểm chứng riêng ở
-    # tests/test_weather_tools.py::test_health_check_without_key.
+    # key phụ thuộc môi trường chạy. Hành vi "không có key thì báo False" được
+    # kiểm chứng riêng ở tests/test_weather_tools.py::test_health_check_without_key.
     assert isinstance(payload["weatherapi_key_configured"], bool)
     assert payload["max_forecast_days"] == 3
 
@@ -321,6 +326,8 @@ def test_http_transport_end_to_end(mock_weather_api):
 
     payload = json.loads(_text(health))
     assert payload["weatherapi_key_configured"] is True
+    assert payload["transport"] == "streamable-http"
+    assert payload["endpoint"].endswith("/mcp")
 
 
 def test_http_endpoint_is_mcp_path_not_root():

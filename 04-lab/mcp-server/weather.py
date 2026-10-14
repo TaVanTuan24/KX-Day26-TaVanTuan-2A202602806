@@ -134,9 +134,63 @@ def _scrub(text: str) -> str:
     return text.replace(key, "***REDACTED***") if key else text
 
 
-def _val(mapping: dict[str, Any], key: str, fallback: str = "không rõ") -> Any:
+def _val(mapping: object, key: str, fallback: str = "không rõ") -> Any:
+    """Lấy giá trị VÔ HƯỚNG từ `mapping`, an toàn với mọi kiểu dữ liệu.
+
+    Xử lý được nested JSON sai kiểu:
+      - `mapping` không phải dict (ví dụ `current` là chuỗi) → fallback.
+      - giá trị là dict/list/tuple/set (lồng sâu hơn dự kiến) → fallback, KHÔNG
+        đổ JSON thô vào câu trả lời cho người dùng.
+
+    Bản cũ gọi thẳng `mapping.get(...)`, nên `_val("Cloudy", "text")` sẽ ném
+    `AttributeError: 'str' object has no attribute 'get'`.
+    """
+    if not isinstance(mapping, dict):
+        return fallback
     value = mapping.get(key)
-    return fallback if value in (None, "") else value
+    if value is None or value == "":
+        return fallback
+    if isinstance(value, (dict, list, tuple, set)):
+        return fallback
+    return value
+
+
+def _str_or_empty(mapping: object, key: str) -> str:
+    """Lấy giá trị dạng chuỗi (dùng cho field có thể vắng), sai kiểu → ""."""
+    if not isinstance(mapping, dict):
+        return ""
+    value = mapping.get(key)
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return ""
+    return str(value).strip()
+
+
+def _place(location: object) -> str:
+    """Ghép "name, region, country" an toàn với mọi kiểu dữ liệu.
+
+    Bản cũ dùng `", ".join(...)` trực tiếp, nên `name` là số/list/dict sẽ ném
+    `TypeError: sequence item 0: expected str instance`.
+    """
+    if not isinstance(location, dict):
+        return "?"
+    parts = [_str_or_empty(location, key) for key in ("name", "region", "country")]
+    return ", ".join(part for part in parts if part) or "?"
+
+
+def _condition(container: object) -> str:
+    """Lấy `condition.text` an toàn.
+
+    `condition` trong WeatherAPI là object lồng, nhưng nếu upstream trả về chuỗi
+    (hoặc số, hoặc list) thì vẫn phải xử lý được. Chuỗi đi thẳng vẫn dùng được.
+    """
+    if not isinstance(container, dict):
+        return "không rõ"
+    condition = container.get("condition")
+    if isinstance(condition, dict):
+        return str(_val(condition, "text"))
+    if isinstance(condition, str) and condition.strip():
+        return condition.strip()
+    return "không rõ"
 
 
 def _describe_api_error(error: object) -> str:
@@ -212,26 +266,45 @@ async def _fetch(
     return data, None
 
 
-def _format_current(data: dict[str, Any]) -> str:
+# Các field vô hướng mà một payload `current` dùng được phải có ít nhất một cái.
+_CURRENT_FIELDS = (
+    "temp_c",
+    "feelslike_c",
+    "humidity",
+    "wind_kph",
+    "wind_dir",
+    "pressure_mb",
+    "uv",
+    "vis_km",
+    "last_updated",
+)
+
+
+def _format_current(data: object) -> str:
+    """Định dạng thời tiết hiện tại. KHÔNG bao giờ crash, KHÔNG báo thành công giả."""
+    if not isinstance(data, dict):
+        return "❌ WeatherAPI trả về dữ liệu hiện tại sai cấu trúc (không phải object)."
+
     current = data.get("current")
-    location = data.get("location")
     if not isinstance(current, dict) or not current:
         return "❌ WeatherAPI trả về dữ liệu thiếu mục 'current'."
-    if not isinstance(location, dict):
-        location = {}
 
-    name = _val(location, "name", "?")
-    region = location.get("region") or ""
-    country = location.get("country") or ""
-    place = ", ".join(part for part in (name, region, country) if part)
-    condition = _val(current.get("condition") or {}, "text")
+    # Nếu không có MỘT field vô hướng nào đọc được thì payload vô dụng — phải báo
+    # lỗi, không được trả về một trang toàn "không rõ" như thể thành công.
+    if not any(_val(current, field, None) is not None for field in _CURRENT_FIELDS):
+        return (
+            "❌ WeatherAPI trả về dữ liệu hiện tại không hợp lệ "
+            "(không có trường số liệu nào đọc được)."
+        )
+
+    place = _place(data.get("location"))
 
     return "\n".join(
         [
             f"Thời tiết hiện tại tại {place}:",
             f"- Nhiệt độ: {_val(current, 'temp_c')}°C "
             f"(cảm giác như {_val(current, 'feelslike_c')}°C)",
-            f"- Tình trạng: {condition}",
+            f"- Tình trạng: {_condition(current)}",
             f"- Độ ẩm: {_val(current, 'humidity')}%",
             f"- Gió: {_val(current, 'wind_kph')} km/h hướng {_val(current, 'wind_dir')}",
             f"- Áp suất: {_val(current, 'pressure_mb')} mb",
@@ -242,39 +315,72 @@ def _format_current(data: dict[str, Any]) -> str:
     )
 
 
-def _format_forecast(data: dict[str, Any], days: int) -> str:
-    location = data.get("location")
+# Các field số liệu của một ngày dự báo. Một entry chỉ được coi là ĐỌC ĐƯỢC khi
+# có ít nhất một field trong đây (hoặc một `condition` đọc được).
+_NUMERIC_DAY_FIELDS = (
+    "maxtemp_c",
+    "mintemp_c",
+    "daily_chance_of_rain",
+    "maxwind_kph",
+    "uv",
+)
+
+
+def _day_is_readable(day: dict[str, Any]) -> bool:
+    """Entry dự báo có số liệu thật để hiển thị hay không."""
+    if any(_val(day, field, None) is not None for field in _NUMERIC_DAY_FIELDS):
+        return True
+    return _condition(day) != "không rõ"
+
+
+def _format_forecast(data: object, days: int) -> str:
+    """Định dạng dự báo. KHÔNG crash, và KHÔNG báo thành công khi thiếu ngày.
+
+    Bug cũ: `forecast["forecastday"]` chỉ được kiểm tra "truthy". Nếu nó là một
+    dict/chuỗi (sai kiểu) thì vòng lặp chạy qua key/ký tự, mọi entry bị `continue`,
+    và hàm trả về **chỉ mỗi dòng tiêu đề** — tức là báo thành công với dự báo rỗng.
+    """
+    if not isinstance(data, dict):
+        return "❌ WeatherAPI trả về dữ liệu dự báo sai cấu trúc (không phải object)."
+
     forecast = data.get("forecast")
-    if not isinstance(forecast, dict) or not forecast.get("forecastday"):
+    if not isinstance(forecast, dict):
         return "❌ WeatherAPI trả về dữ liệu thiếu mục 'forecast.forecastday'."
-    if not isinstance(location, dict):
-        location = {}
 
-    name = _val(location, "name", "?")
-    region = location.get("region") or ""
-    country = location.get("country") or ""
-    place = ", ".join(part for part in (name, region, country) if part)
+    raw_days = forecast.get("forecastday")
+    if not isinstance(raw_days, list) or not raw_days:
+        return "❌ WeatherAPI trả về dữ liệu thiếu mục 'forecast.forecastday'."
 
-    blocks = [f"Dự báo {days} ngày tới tại {place}:"]
-    for entry in forecast["forecastday"]:
+    blocks = [f"Dự báo {days} ngày tới tại {_place(data.get('location'))}:"]
+    for entry in raw_days:
         if not isinstance(entry, dict):
             continue
         day = entry.get("day")
         if not isinstance(day, dict):
-            day = {}
-        condition = _val(day.get("condition") or {}, "text")
+            continue
+        # Entry không có số liệu thật nào thì KHÔNG được tạo block "toàn không rõ"
+        # — làm vậy là báo thành công cho dữ liệu không hợp lệ.
+        if not _day_is_readable(day):
+            continue
         blocks.append(
             "\n".join(
                 [
                     f"\nNgày {_val(entry, 'date')}:",
                     f"- Cao nhất / thấp nhất: {_val(day, 'maxtemp_c')}°C / "
                     f"{_val(day, 'mintemp_c')}°C",
-                    f"- Tình trạng: {condition}",
+                    f"- Tình trạng: {_condition(day)}",
                     f"- Khả năng mưa: {_val(day, 'daily_chance_of_rain')}%",
                     f"- Gió mạnh nhất: {_val(day, 'maxwind_kph')} km/h",
                     f"- Chỉ số UV: {_val(day, 'uv')}",
                 ]
             )
+        )
+
+    if len(blocks) == 1:
+        # Không ngày nào dùng được → đây là dữ liệu KHÔNG hợp lệ, phải báo lỗi.
+        return (
+            "❌ WeatherAPI trả về dữ liệu dự báo không hợp lệ "
+            "(không có ngày nào đọc được)."
         )
     return "\n".join(blocks)
 
@@ -332,14 +438,25 @@ async def get_forecast(city: str, days: int = 3) -> str:
 @mcp.tool()
 async def health_check() -> str:
     """Kiểm tra MCP server còn sống. KHÔNG gọi WeatherAPI, không cần API key."""
+    transport = current_transport()
+    # Endpoint chỉ có ý nghĩa với transport HTTP. Ở chế độ stdio, báo null thay vì
+    # bịa ra một URL HTTP mà server không hề mở.
+    if transport == "streamable-http":
+        endpoint: str | None = f"http://{HOST}:{PORT}/mcp"
+    elif transport == "sse":
+        endpoint = f"http://{HOST}:{PORT}/sse"
+    else:
+        endpoint = None
+
     return json.dumps(
         {
             "status": "ok",
             "server": "weather-mcp",
-            "transport": "streamable-http",
+            # Transport THẬT đang phục vụ, không phải hằng số hard-code.
+            "transport": transport,
             "host": HOST,
             "port": PORT,
-            "endpoint": f"http://{HOST}:{PORT}/mcp",
+            "endpoint": endpoint,
             "tools": list(TOOL_NAMES),
             "max_forecast_days": MAX_FORECAST_DAYS,
             # Chỉ công bố CÓ/KHÔNG, tuyệt đối không công bố giá trị key.
@@ -372,8 +489,32 @@ def resolve_transport() -> str:
     return requested
 
 
+# Transport THỰC TẾ đang phục vụ. Đặt trong `__main__` ngay trước `mcp.run()`.
+# `health_check()` đọc biến này thay vì hard-code — trước đây server chạy stdio
+# vẫn báo "streamable-http", tức là health_check nói sai sự thật.
+ACTIVE_TRANSPORT: str | None = None
+
+
+def set_active_transport(transport: str) -> None:
+    """Ghi nhận transport đang thực sự phục vụ (gọi từ `__main__`)."""
+    global ACTIVE_TRANSPORT
+    ACTIVE_TRANSPORT = transport
+
+
+def current_transport() -> str:
+    """Transport đang phục vụ; nếu chưa khởi động thì suy ra từ cấu hình."""
+    if ACTIVE_TRANSPORT:
+        return ACTIVE_TRANSPORT
+    try:
+        return resolve_transport()
+    except SystemExit:
+        # MCP_TRANSPORT sai → server sẽ thoát lúc khởi động, không có transport.
+        return "unknown"
+
+
 if __name__ == "__main__":
     transport = resolve_transport()
+    set_active_transport(transport)
     # Mọi log đi ra stderr: stdout có thể là kênh JSON-RPC khi dùng stdio.
     if LOADED_ENV_FILES:
         print(

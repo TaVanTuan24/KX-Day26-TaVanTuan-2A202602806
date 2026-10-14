@@ -267,18 +267,269 @@ def test_forecast_missing_fields(weather, mock_weather_api, payload):
 
 
 def test_forecast_tolerates_malformed_day_entries(weather, mock_weather_api):
+    """Entry hỏng bị BỎ QUA, không crash, và KHÔNG tạo block 'toàn không rõ'.
+
+    Hành vi này siết hơn bản trước: entry chỉ có `date` mà không có số liệu thì
+    không được hiển thị như thể ta có dự báo của ngày đó.
+    """
     mock_weather_api.set(
         "/v1/forecast.json",
         body={
             "location": {"name": "Hanoi"},
-            "forecast": {"forecastday": [{"date": "2026-10-15"}, "rác", {"date": "2026-10-16", "day": {"maxtemp_c": 30}}]},
+            "forecast": {
+                "forecastday": [
+                    {"date": "2026-10-15"},  # thiếu hẳn `day` → bỏ qua
+                    "rác",                    # không phải dict → bỏ qua
+                    {"date": "2026-10-16", "day": {"maxtemp_c": 30}},  # hợp lệ
+                ]
+            },
         },
     )
 
     text = asyncio.run(weather.get_forecast("Hanoi", 2))
 
-    assert "2026-10-15" in text
+    assert not text.startswith("❌"), "vẫn còn 1 ngày hợp lệ nên phải thành công"
+    assert "2026-10-16" in text
+    assert "2026-10-15" not in text, "entry không có số liệu KHÔNG được tạo block giả"
     assert "Traceback" not in text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4b. Nested JSON SAI KIỂU — regression: không crash, không báo thành công giả
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # `condition` là chuỗi thay vì object lồng → bản cũ: AttributeError
+        {"current": {"temp_c": 30, "condition": "Cloudy"}, "location": {"name": "Hanoi"}},
+        # `name` là số, `region` là dict → bản cũ: TypeError ở ", ".join
+        {"current": {"temp_c": 30}, "location": {"name": 123, "region": {"a": 1}}},
+        {"current": {"temp_c": 30}, "location": {"name": ["x"], "country": {"a": 1}}},
+        # giá trị lồng sâu sai kiểu
+        {"current": {"temp_c": {"v": 1}, "humidity": [1]}, "location": {"name": "Hanoi"}},
+        {"current": {"temp_c": 30, "wind_dir": {"deg": 90}}, "location": None},
+        # `current` bị bọc thêm một tầng
+        {"current": {"current": {"temp_c": 30}}, "location": {"name": "Hanoi"}},
+        # `location` là kiểu vô hướng
+        {"current": {"temp_c": 30}, "location": "Hanoi"},
+    ],
+)
+def test_current_weather_never_crashes_on_wrong_types(weather, mock_weather_api, payload):
+    mock_weather_api.set("/v1/current.json", body=payload)
+
+    text = asyncio.run(weather.get_current_weather("Hanoi"))
+
+    assert isinstance(text, str) and text
+    for marker in ("Traceback", "AttributeError", "TypeError", "KeyError", "IndexError"):
+        assert marker not in text, f"{marker} lọt ra ngoài: {text!r}"
+
+
+def test_current_weather_uses_condition_string_when_not_nested(weather, mock_weather_api):
+    """`condition` là chuỗi vẫn dùng được, không cần là object lồng."""
+    mock_weather_api.set(
+        "/v1/current.json",
+        body={"current": {"temp_c": 30, "condition": "Cloudy"}, "location": {"name": "Hanoi"}},
+    )
+
+    text = asyncio.run(weather.get_current_weather("Hanoi"))
+
+    assert "Cloudy" in text
+    assert not text.startswith("❌")
+
+
+def test_current_weather_wrong_types_yield_error_not_fake_success(weather, mock_weather_api):
+    """`current` chỉ toàn giá trị sai kiểu → phải báo lỗi, không trả trang 'không rõ'."""
+    mock_weather_api.set(
+        "/v1/current.json",
+        body={
+            "current": {"temp_c": {"nested": 1}, "humidity": [1, 2], "condition": {"a": 1}},
+            "location": {"name": "Hanoi"},
+        },
+    )
+
+    text = asyncio.run(weather.get_current_weather("Hanoi"))
+
+    assert text.startswith("❌")
+    assert "không hợp lệ" in text
+
+
+def test_current_weather_non_string_location_is_safe(weather, mock_weather_api):
+    mock_weather_api.set(
+        "/v1/current.json",
+        body={"current": {"temp_c": 30}, "location": {"name": {"x": 1}, "region": [1]}},
+    )
+
+    text = asyncio.run(weather.get_current_weather("Hanoi"))
+
+    assert not text.startswith("❌")
+    assert "Thời tiết hiện tại tại ?" in text
+
+
+@pytest.mark.parametrize(
+    "forecastday",
+    [
+        {"a": 1},          # dict → bản cũ lặp qua KEY rồi trả về "thành công rỗng"
+        "abc",             # chuỗi → bản cũ lặp qua từng KÝ TỰ
+        123,               # số
+        [1, "x", None],    # list toàn rác
+        [{}],              # entry rỗng, không có `day`
+        [{"date": "d"}],   # có `date` nhưng không có số liệu nào
+        [{"date": "d", "day": "nope"}],   # `day` sai kiểu
+        [{"date": "d", "day": {}}],       # `day` rỗng
+    ],
+)
+def test_forecast_never_reports_success_without_usable_days(
+    weather, mock_weather_api, forecastday
+):
+    """Regression: dữ liệu dự báo không đọc được PHẢI trả lỗi, không được trả về
+    chỉ mỗi dòng tiêu đề như thể thành công."""
+    mock_weather_api.set("/v1/forecast.json", body={"forecast": {"forecastday": forecastday}})
+
+    text = asyncio.run(weather.get_forecast("Hanoi", 3))
+
+    assert text.startswith("❌"), f"phải báo lỗi, không được 'thành công rỗng': {text!r}"
+    assert "Dự báo 3 ngày tới tại" not in text, "không được in tiêu đề dự báo rỗng"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"date": "2026-10-15", "day": {"maxtemp_c": 30}},
+        {"date": "2026-10-15", "day": {"uv": 5}},
+        {"date": "2026-10-15", "day": {"condition": "Sunny"}},
+        {"date": "2026-10-15", "day": {"condition": {"text": "Sunny"}}},
+    ],
+)
+def test_forecast_day_is_usable_with_any_readable_field(weather, mock_weather_api, entry):
+    mock_weather_api.set("/v1/forecast.json", body={"forecast": {"forecastday": [entry]}})
+
+    text = asyncio.run(weather.get_forecast("Hanoi", 3))
+
+    assert not text.startswith("❌")
+    assert "2026-10-15" in text
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"date": "2026-10-15", "day": {"maxtemp_c": 30, "condition": "Sunny"}},
+        {"date": "2026-10-15", "day": {"maxtemp_c": {"v": 1}, "condition": 5}},
+        {"date": {"a": 1}, "day": {"mintemp_c": 20}},
+        {"day": {"maxwind_kph": [1]}},
+    ],
+)
+def test_forecast_day_never_crashes_on_wrong_types(weather, mock_weather_api, entry):
+    mock_weather_api.set("/v1/forecast.json", body={"forecast": {"forecastday": [entry]}})
+
+    text = asyncio.run(weather.get_forecast("Hanoi", 3))
+
+    assert isinstance(text, str) and text
+    for marker in ("Traceback", "AttributeError", "TypeError", "KeyError", "IndexError"):
+        assert marker not in text, f"{marker} lọt ra ngoài: {text!r}"
+
+
+def test_forecast_mixed_valid_and_invalid_entries(weather, mock_weather_api):
+    """Chỉ những ngày có số liệu thật mới xuất hiện."""
+    mock_weather_api.set(
+        "/v1/forecast.json",
+        body={
+            "location": {"name": "Da Nang"},
+            "forecast": {
+                "forecastday": [
+                    {"date": "2026-10-14"},
+                    {"date": "2026-10-15", "day": {"maxtemp_c": 31, "mintemp_c": 24}},
+                    {"date": "2026-10-16", "day": "rác"},
+                    {"date": "2026-10-17", "day": {"daily_chance_of_rain": 80}},
+                ]
+            },
+        },
+    )
+
+    text = asyncio.run(weather.get_forecast("Da Nang", 3))
+
+    assert "2026-10-15" in text
+    assert "2026-10-17" in text
+    assert "2026-10-14" not in text
+    assert "2026-10-16" not in text
+
+
+# ── Helper thuần: _val / _place / _condition / _day_is_readable ──────────────
+
+
+@pytest.mark.parametrize(
+    ("mapping", "expected"),
+    [
+        ({"k": "v"}, "v"),
+        ({"k": 0}, 0),
+        ({"k": None}, "không rõ"),
+        ({"k": ""}, "không rõ"),
+        ({"k": {}}, "không rõ"),
+        ({"k": []}, "không rõ"),
+        ({}, "không rõ"),
+        ("không phải dict", "không rõ"),
+        (None, "không rõ"),
+        (123, "không rõ"),
+    ],
+)
+def test_val_is_type_safe(weather, mapping, expected):
+    assert weather._val(mapping, "k") == expected
+
+
+@pytest.mark.parametrize(
+    ("location", "expected"),
+    [
+        ({"name": "Hanoi", "region": "Ha Noi", "country": "Vietnam"}, "Hanoi, Ha Noi, Vietnam"),
+        ({"name": "Hanoi"}, "Hanoi"),
+        ({"name": 123}, "123"),
+        ({"name": {"x": 1}}, "?"),
+        ({"name": ""}, "?"),
+        ({}, "?"),
+        (None, "?"),
+        ("Hanoi", "?"),
+        ([1], "?"),
+    ],
+)
+def test_place_is_type_safe(weather, location, expected):
+    assert weather._place(location) == expected
+
+
+@pytest.mark.parametrize(
+    ("container", "expected"),
+    [
+        ({"condition": {"text": "Sunny"}}, "Sunny"),
+        ({"condition": "Cloudy"}, "Cloudy"),
+        ({"condition": "  Rain  "}, "Rain"),
+        ({"condition": ""}, "không rõ"),
+        ({"condition": 5}, "không rõ"),
+        ({"condition": ["x"]}, "không rõ"),
+        ({"condition": {"text": None}}, "không rõ"),
+        ({}, "không rõ"),
+        ("nope", "không rõ"),
+        (None, "không rõ"),
+    ],
+)
+def test_condition_is_type_safe(weather, container, expected):
+    assert weather._condition(container) == expected
+
+
+@pytest.mark.parametrize(
+    ("day", "expected"),
+    [
+        ({"maxtemp_c": 30}, True),
+        ({"uv": 0}, True),
+        ({"daily_chance_of_rain": 0}, True),
+        ({"condition": "Sunny"}, True),
+        ({"condition": {"text": "Sunny"}}, True),
+        ({}, False),
+        ({"date": "2026-10-15"}, False),
+        ({"maxtemp_c": {"v": 1}}, False),
+        ({"condition": {"other": 1}}, False),
+    ],
+)
+def test_day_is_readable(weather, day, expected):
+    assert weather._day_is_readable(day) is expected
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -304,6 +555,69 @@ def test_health_check_without_key(weather, monkeypatch):
 def test_health_check_never_leaks_key(weather):
     payload = asyncio.run(weather.health_check())
     assert "test-key-abc123" not in payload
+
+
+# ── health_check phải phản ánh transport THẬT (không hard-code) ─────────────
+
+
+def test_health_check_reports_stdio_and_no_http_endpoint(weather, monkeypatch):
+    """Regression: chạy stdio nhưng health_check báo 'streamable-http' là NÓI SAI."""
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+    weather.set_active_transport("stdio")
+
+    payload = json.loads(asyncio.run(weather.health_check()))
+
+    assert payload["transport"] == "stdio"
+    assert payload["endpoint"] is None, "stdio không có endpoint HTTP"
+
+
+def test_health_check_reports_streamable_http_with_endpoint(weather, monkeypatch):
+    monkeypatch.setenv("MCP_TRANSPORT", "streamable-http")
+    weather.set_active_transport("streamable-http")
+
+    payload = json.loads(asyncio.run(weather.health_check()))
+
+    assert payload["transport"] == "streamable-http"
+    assert payload["endpoint"].endswith("/mcp")
+
+
+def test_health_check_reports_sse_with_sse_path(weather, monkeypatch):
+    monkeypatch.setenv("MCP_TRANSPORT", "sse")
+    weather.set_active_transport("sse")
+
+    payload = json.loads(asyncio.run(weather.health_check()))
+    assert payload["transport"] == "sse"
+    assert payload["endpoint"].endswith("/sse")
+
+
+def test_health_check_transport_follows_env_when_not_started(weather, monkeypatch):
+    """Chưa chạy `__main__` → suy ra từ cấu hình, không hard-code."""
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+    weather.ACTIVE_TRANSPORT = None
+
+    assert json.loads(asyncio.run(weather.health_check()))["transport"] == "stdio"
+
+    monkeypatch.delenv("MCP_TRANSPORT", raising=False)
+    assert (
+        json.loads(asyncio.run(weather.health_check()))["transport"]
+        == "streamable-http"
+    )
+
+
+def test_health_check_transport_unknown_when_env_invalid(weather, monkeypatch):
+    monkeypatch.setenv("MCP_TRANSPORT", "carrier-pigeon")
+    weather.ACTIVE_TRANSPORT = None
+
+    payload = json.loads(asyncio.run(weather.health_check()))
+
+    assert payload["transport"] == "unknown"
+    assert payload["endpoint"] is None
+
+
+def test_set_active_transport_overrides_env(weather, monkeypatch):
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+    weather.set_active_transport("streamable-http")
+    assert weather.current_transport() == "streamable-http"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

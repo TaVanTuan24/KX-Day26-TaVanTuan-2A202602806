@@ -94,8 +94,10 @@ def _make_handler(outer: MockWeatherAPI):
             self.end_headers()
             try:
                 self.wfile.write(data)
-            except (BrokenPipeError, ConnectionResetError):
+            except OSError:
                 # Client (test) đã bỏ đi — ví dụ test timeout cố ý ngắt kết nối.
+                # Windows: ConnectionAbortedError [WinError 10053]; POSIX:
+                # BrokenPipeError / ConnectionResetError — tất cả đều là OSError.
                 # Không phải lỗi của server, không cần log ồn ào.
                 pass
 
