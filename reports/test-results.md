@@ -11,22 +11,35 @@
 
 ## 1. Tổng hợp
 
-| # | Nhóm test | Lệnh | Kết quả |
+| # | Nhóm test | Lệnh | Số test thu thập | Kết quả |
+|---|---|---|---|---|
+| 1 | Module 01–03 (repo root) | `.\.venv\Scripts\python.exe -m pytest -q` | 96 | ✅ **96 passed** |
+| 2 | Lab 04 — MCP server | `uv run --frozen --with pytest python -m pytest tests -q` | 139 | ✅ **139 passed** |
+| 3 | Lab 04 — MCP client (E2E tắt) | như trên, trong `04-lab/mcp-client` | 56 | ✅ **43 passed, 13 skipped** |
+| | **Tổng chạy offline** | | **291** | ✅ **278 passed, 13 skipped, 0 FAIL** |
+| 4 | Lab 04 — E2E **dữ liệu THẬT** (`DAY26_E2E=1`) | `uv run --frozen --with pytest python -m pytest tests -q` | 56 | ✅ cả 56 chạy; E2E **13/13 pass** với dữ liệu thật (đã xác minh trước đó) |
+| 5 | Docker build + chạy container + MCP handshake | `docker build` / `docker run` | — | ✅ thành công, **kèm xác minh dữ liệu THẬT trong container** |
+| 6 | `verify_setup.py` (server + WeatherAPI key thật) | `uv run python verify_setup.py` | 9 tầng | ✅ **PASS=9, FAIL=0, NOT VERIFIED=0** |
+| 7 | `verify_setup.py --no-network` (không key, như CI) | `uv run python verify_setup.py --no-network` | 9 tầng | ✅ **PASS=7, FAIL=0, NOT VERIFIED=2**, exit 0 |
+
+### Vì sao số test tăng qua các lần làm (không có test nào bị xoá)
+
+Đây là câu trả lời cho các con số khác nhau xuất hiện ở những báo cáo trước
+(`65` vs `68` của MCP Server, `55` vs `56` của MCP Client): **chỉ THÊM regression
+test, không bỏ test nào**.
+
+| Thời điểm | MCP Server | MCP Client | Việc đã làm |
 |---|---|---|---|
-| 1 | Module 01–03 (repo root) | `.\.venv\Scripts\python.exe -m pytest -q` | ✅ **96 passed** |
-| 2 | Lab 04 — MCP server | `uv run --frozen --with pytest python -m pytest tests -q` | ✅ **68 passed** |
-| 3 | Lab 04 — MCP client (E2E tắt) | như trên, trong `04-lab/mcp-client` | ✅ **43 passed, 13 skipped** |
-| 4 | Lab 04 — E2E **dữ liệu THẬT** (`DAY26_E2E=1`) | `uv run --frozen --with pytest python -m pytest tests -q` | ✅ **55 passed** (0 FAIL) ở lần chạy sạch; **47 passed + 9 skipped, 0 FAIL** khi key bị chặn IP |
-| 5 | Docker build + chạy container + MCP handshake | `docker build` / `docker run` | ✅ thành công, **kèm xác minh dữ liệu THẬT trong container** |
-| 6 | `verify_setup.py` (server chạy, WeatherAPI key thật) | `uv run python verify_setup.py` | ✅ **PASS=9, FAIL=0, ➖ NOT VERIFIED=0** |
+| Sau audit ban đầu | 65 | 55 | test cho `.env`, versioning, registry, auth |
+| + test nạp `.env` | **66** | 55 | `test_dotenv_next_to_server_is_loaded_when_present` |
+| + 2 test đường dẫn nông Docker | **68** | 55 | regression cho bug `IndexError: 2` |
+| + `find_repo_root` dùng dấu hiệu | 68 | **56** | `test_find_repo_root_uses_markers_not_depth` |
+| + 71 test nested-JSON & transport (**vòng này**) | **139** | 56 | xem mục 3 |
 
-**Tổng test tự động: 96 + 68 + 55 = 219.**
+**Con số chính thức hiện tại: 96 + 139 + 56 = 291 test** (278 pass + 13 skip khi
+chạy offline).
 
-> **Không bao giờ có FAIL giả.** Khi key Gemini bị chặn IP, các test E2E chuyển
-> thành **SKIPPED** kèm dòng *"Đây KHÔNG phải PASS"* — số pass giảm nhưng số FAIL
-> vẫn là **0**.
-
-### Chi tiết theo file (module 01–03) — 96 passed
+### Chi tiết theo file (module 01–03) — 96 test
 
 | File | Số test | Nội dung |
 |---|---|---|
@@ -36,12 +49,12 @@
 | `tests/test_03_registry.py` | 29 | Registry: tag/keyword, best match, semantic version, 10 nhánh lỗi, endpoint minh hoạ lỗi rõ ràng |
 | `tests/test_03_versioning.py` | 18 | v1 backward compat, v2 default, forecast, fahrenheit, units sai, `server://info` |
 
-### Chi tiết theo file (Lab 04) — 68 + 55
+### Chi tiết theo file (Lab 04) — 139 + 56
 
 | File | Số test | Nội dung |
 |---|---|---|
-| `04-lab/mcp-server/tests/test_weather_tools.py` | 60 | Validate `days` 1–3 (chặn trước khi gọi upstream), ánh xạ 401/400/429/5xx, JSON hỏng, timeout, lỗi mạng, payload thiếu trường, `health_check`, che key, chọn transport |
-| `04-lab/mcp-server/tests/test_mcp_transports.py` | 8 | MCP thật qua stdio + Streamable HTTP, stdout sạch, endpoint `/mcp`, **nạp `.env`**, **regression đường dẫn nông kiểu Docker** |
+| `04-lab/mcp-server/tests/test_weather_tools.py` | **131** | Validate `days` 1–3 (chặn trước khi gọi upstream), ánh xạ 401/400/429/5xx, JSON hỏng, timeout, lỗi mạng, payload thiếu trường, **nested JSON sai kiểu**, `health_check` (trạng thái key + **transport thật**), che key, chọn transport |
+| `04-lab/mcp-server/tests/test_mcp_transports.py` | 8 | MCP thật qua stdio + Streamable HTTP, stdout sạch, endpoint `/mcp`, **nạp `.env`**, regression đường dẫn nông Docker, **transport báo đúng ở cả 2 chế độ** |
 | `04-lab/mcp-client/tests/test_agent_config.py` | 27 | `env_setup` alias, `find_repo_root`, cấu trúc agent, instruction chống bịa, các tầng `verify_setup` báo cáo đúng |
 | `04-lab/mcp-client/tests/test_e2e_harness.py` | 16 | Trích xuất kết quả tool (chống assertion vô nghĩa), nhận diện lỗi tạm thời |
 | `04-lab/mcp-client/tests/test_e2e_agent.py` | 13 | 5 câu hỏi bắt buộc + chế độ suy giảm + các chốt chống "PASS giả" |
@@ -201,6 +214,54 @@ Kèm 3 chốt chống "PASS giả" (đều pass trong lần chạy thật):
 | `.env` bị tài liệu hoá nhưng server không đọc | `test_dotenv_next_to_server_is_loaded_when_present` + log `[weather-mcp] .env đã nạp: ...` |
 | Chế độ degraded mất tác dụng sau khi thêm `.env` | E2E degraded dùng key sai → `is_error: [True]`, agent báo trung thực |
 
+### 3.1. Vòng hoàn thiện cuối — bằng chứng cụ thể
+
+**a) `_format_current()` / `_format_forecast()` với nested JSON sai kiểu**
+
+Trước khi sửa, các payload sau làm **crash** hoặc **báo thành công giả**:
+
+| Payload | Hành vi CŨ | Hành vi MỚI | Test |
+|---|---|---|---|
+| `current.condition = "Cloudy"` (chuỗi) | ❌ `AttributeError: 'str' object has no attribute 'get'` | ✅ hiển thị `Tình trạng: Cloudy` | `test_current_weather_uses_condition_string_when_not_nested` |
+| `location.name = 123`, `region = {...}` | ❌ `TypeError` ở `", ".join` | ✅ địa điểm an toàn (`123`, hoặc `?`) | `test_current_weather_never_crashes_on_wrong_types` |
+| `current = {"temp_c": {"v":1}, "humidity":[1]}` | hiển thị JSON thô | ✅ báo lỗi "không hợp lệ" | `test_current_weather_wrong_types_yield_error_not_fake_success` |
+| `forecast.forecastday = {"a":1}` (dict) | ❌ **báo thành công với dự báo RỖNG** (chỉ in tiêu đề) | ✅ báo lỗi | `test_forecast_never_reports_success_without_usable_days` |
+| `forecast.forecastday = "abc"` (chuỗi) | ❌ lặp qua từng ký tự → thành công rỗng | ✅ báo lỗi | như trên |
+| `forecastday = [{"date":"d"}]` (không có số liệu) | ❌ vẫn tạo block "toàn không rõ" | ✅ báo lỗi | như trên |
+| `day.condition = "Sunny"` (chuỗi trong `day`) | ❌ `AttributeError` | ✅ dùng được | `test_forecast_day_never_crashes_on_wrong_types` |
+
+Bằng chứng chạy thật (probe trực tiếp, trước khi viết test):
+
+```
+[condition la str]                       OK -> 'Thời tiết hiện tại tại Hanoi: ... Tình trạng: Cloudy'
+[location name la int/region dict]       OK -> 'Thời tiết hiện tại tại 123: ...'
+[khong co field doc duoc]                OK -> '❌ ... không có trường số liệu nào đọc được.'
+[forecastday la dict]                    OK -> '❌ ... thiếu mục forecast.forecastday.'
+[forecastday la str]                     OK -> '❌ ... thiếu mục forecast.forecastday.'
+[forecastday list toan rac]              OK -> '❌ ... không có ngày nào đọc được.'
+```
+
+→ **71 test mới** cho nhóm này + `_val` / `_place` / `_condition` / `_day_is_readable`.
+
+**b) `health_check()` báo sai transport**
+
+| Chế độ chạy | Trước | Sau |
+|---|---|---|
+| `MCP_TRANSPORT=stdio` | ❌ `"transport": "streamable-http"`, `endpoint` là URL HTTP không tồn tại | ✅ `"transport": "stdio"`, `"endpoint": null` |
+| `streamable-http` | ✅ đúng | ✅ đúng, `endpoint` kết thúc `/mcp` |
+| `sse` | ❌ báo streamable-http | ✅ `"sse"`, endpoint `/sse` |
+| `MCP_TRANSPORT` sai | — | ✅ `"unknown"`, `endpoint` null |
+
+Kiểm chứng bằng **integration test thật**: `test_stdio_lists_tools_and_calls_health_check`
+khẳng định server chạy stdio báo `transport == "stdio"` và `endpoint is None`;
+`test_http_transport_end_to_end` khẳng định `streamable-http` + endpoint `/mcp`.
+
+**c) Tiếng ồn socket trong test harness**
+
+`MockWeatherAPI` nay bắt `OSError` (Windows: `ConnectionAbortedError [WinError 10053]`;
+POSIX: `BrokenPipeError`) khi test timeout cố ý ngắt kết nối → output test sạch, CI log
+không còn traceback giả.
+
 ---
 
 ## 4. Trạng thái xác minh từng hạng mục
@@ -218,6 +279,10 @@ Kèm 3 chốt chống "PASS giả" (đều pass trong lần chạy thật):
 | **E2E toàn chuỗi (dữ liệu thật)** | ✅ **VERIFIED** | 13/13 test, `mode = real-weatherapi` |
 | **Gemini API** | ✅ **VERIFIED** | `verify_setup` tầng 9 PASS; E2E 5/5 câu có câu trả lời |
 | Docker build + run | ✅ **VERIFIED** | Image 429 MB, container healthy, MCP handshake OK |
+| Nested JSON sai kiểu (current/forecast) | ✅ **VERIFIED** | 71 test mới + probe trực tiếp; không còn crash, không còn "thành công rỗng" |
+| `health_check()` báo đúng transport | ✅ **VERIFIED** | Unit (stdio/sse/http/unknown) + integration thật ở cả stdio và HTTP |
+| `verify_setup.py` không cần key (như CI) | ✅ **VERIFIED** | Server **không có** key + Google key giả → `PASS=7, FAIL=0, NOT VERIFIED=2`, **exit 0** |
+| GitHub Actions workflow | ⚠️ **CHƯA CHẠY THẬT** | YAML hợp lệ (đã parse), từng bước đã mô phỏng ở local; **chưa push nên chưa có run nào trên GitHub** |
 | Cloud Run deploy | ➖ **NOT ATTEMPTED** | Không deploy để tránh phát sinh chi phí |
 | `adk web` UI | ➖ **NOT AUTOMATED** | E2E dùng `InMemoryRunner` cùng `root_agent`; `verify_setup` xác minh import + kết nối |
 
@@ -231,9 +296,13 @@ nên tỉ lệ request thành công thay đổi theo thời điểm. Điều nà
 
 | Thời điểm | Kết quả E2E |
 |---|---|
-| Lúc có key WeatherAPI (và egress IP được phép) | ✅ **55 passed / 0 FAIL**, `mode=real-weatherapi`, dữ liệu THẬT |
+| Lúc có key WeatherAPI (và egress IP được phép) | ✅ **55 passed / 0 FAIL** tại thời điểm đó (tổng bộ client khi ấy là 55), `mode=real-weatherapi`, dữ liệu THẬT |
 | Sau đó (egress IP bị chặn hoàn toàn) | ✅ **47 passed + 9 skipped / 0 FAIL** — mọi câu in rõ *"Đây KHÔNG phải PASS"* |
 | Đã từng có lần cả 5 câu FAIL với `API_KEY_INVALID` | Đó là **bug thật trong test** (rò rỉ env), đã sửa; xem `implementation-summary.md` C2 #18 |
+
+> Con số `55` ở dòng đầu là tổng bộ client **tại thời điểm đó** (26+16+13). Sau khi
+> thêm `test_find_repo_root_uses_markers_not_depth`, tổng hiện tại là **56**.
+> Không có test nào bị xoá — xem bảng "Vì sao số test tăng" ở mục 1.
 
 Điểm quan trọng: **số FAIL luôn là 0**. Khi môi trường chặn, test chuyển thành
 SKIP chứ không báo FAIL giả và cũng không báo PASS giả.

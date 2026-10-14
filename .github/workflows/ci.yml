@@ -1,0 +1,143 @@
+name: CI (offline)
+
+# Chạy hoàn toàn OFFLINE: không cần GOOGLE_API_KEY, không cần WEATHERAPI_KEY,
+# không tiêu quota API nào. Test E2E thật (DAY26_E2E=1) KHÔNG chạy ở đây.
+#
+# Ba môi trường Python tách biệt, đúng như khi chạy local:
+#   1. modules-01-03   : .venv ở gốc repo  (mcp 2.x)       — pip
+#   2. lab-mcp-server  : 04-lab/mcp-server (mcp 1.x + fastmcp) — uv + uv.lock
+#   3. lab-mcp-client  : 04-lab/mcp-client (ADK + mcp 1.x)     — uv + uv.lock
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  # ── 1. Module 01–03 ───────────────────────────────────────────────────────
+  modules-01-03:
+    name: Modules 01-03 (mcp 2.x)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Syntax check every Python file
+        run: python -m compileall -q 01-function-calling 02-mcp-basics 03-production tests
+
+      - name: Run tests
+        run: python -m pytest -q
+
+  # ── 2. Lab — MCP weather server ───────────────────────────────────────────
+  lab-mcp-server:
+    name: Lab 04 - MCP server (mcp 1.x)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync locked environment
+        working-directory: 04-lab/mcp-server
+        run: uv sync --frozen
+
+      - name: Syntax check
+        working-directory: 04-lab/mcp-server
+        run: uv run --frozen python -m compileall -q weather.py tests
+
+      - name: Run tests (unit + mock WeatherAPI + MCP stdio + MCP HTTP)
+        working-directory: 04-lab/mcp-server
+        # KHÔNG đặt WEATHERAPI_KEY: test dùng mock upstream trong tiến trình.
+        run: uv run --frozen --with pytest python -m pytest tests -q
+
+  # ── 3. Lab — ADK client ───────────────────────────────────────────────────
+  lab-mcp-client:
+    name: Lab 04 - ADK client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync server environment (client test spawn server này)
+        working-directory: 04-lab/mcp-server
+        run: uv sync --frozen
+
+      - name: Sync client environment
+        working-directory: 04-lab/mcp-client
+        run: uv sync --frozen
+
+      - name: Run client unit + harness tests
+        working-directory: 04-lab/mcp-client
+        # Thiếu DAY26_E2E ⇒ 13 test E2E tự SKIP kèm lý do, không gọi Gemini.
+        run: uv run --frozen --with pytest python -m pytest tests -q
+
+      - name: Start MCP server (no API key) for integration check
+        working-directory: 04-lab/mcp-server
+        env:
+          MCP_TRANSPORT: streamable-http
+          HOST: 127.0.0.1
+          PORT: "8085"
+        run: |
+          ./.venv/bin/python weather.py > /tmp/mcp-server.log 2>&1 &
+          echo $! > /tmp/mcp-server.pid
+
+      - name: Wait for MCP endpoint
+        run: |
+          for _ in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:8085/mcp || true)
+            if [ -n "$code" ] && [ "$code" != "000" ]; then
+              echo "MCP server sẵn sàng (HTTP $code)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::MCP server không khởi động được"
+          cat /tmp/mcp-server.log
+          exit 1
+
+      - name: Verify setup, 9 levels (no Gemini / no WeatherAPI call)
+        working-directory: 04-lab/mcp-client
+        env:
+          MCP_SERVER_URL: http://127.0.0.1:8085/mcp
+          # Key GIẢ chỉ để tầng 1 (Environment) không FAIL. Không có request nào
+          # tới Google vì dùng --no-network.
+          GOOGLE_API_KEY: ci-dummy-key-not-used
+        run: |
+          uv run --frozen python verify_setup.py --no-network
+          # Kỳ vọng: FAIL=0 (tầng 8/9 là NOT VERIFIED vì thiếu key thật).
+          # Mã thoát 1 nếu có FAIL ⇒ job đỏ.
+
+      - name: Stop MCP server
+        if: always()
+        run: |
+          if [ -f /tmp/mcp-server.pid ]; then
+            kill "$(cat /tmp/mcp-server.pid)" 2>/dev/null || true
+          fi
+          echo "--- log server ---"
+          cat /tmp/mcp-server.log || true

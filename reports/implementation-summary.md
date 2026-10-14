@@ -33,7 +33,7 @@
 | `tests/test_03_versioning.py` | 18 integration test versioning (stdio thật) |
 | `04-lab/mcp-server/.dockerignore` | Loại `.venv` và `.env` khỏi build context |
 | `04-lab/mcp-server/.env.example` | Mẫu cấu hình server |
-| `04-lab/mcp-server/tests/{conftest,test_weather_tools,test_mcp_transports}.py` | 65 test (unit + mock WeatherAPI + MCP stdio + MCP HTTP) |
+| `04-lab/mcp-server/tests/{conftest,test_weather_tools,test_mcp_transports}.py` | 139 test (unit + mock WeatherAPI + MCP stdio + MCP HTTP + nested JSON + `.env`) |
 | `04-lab/mcp-client/.env.example` | Mẫu cấu hình client |
 | `04-lab/mcp-client/env_setup.py` | **Nguồn cấu hình `.env` duy nhất** cho client |
 | `04-lab/mcp-client/tests/{conftest,test_agent_config,test_e2e_harness,test_e2e_agent,e2e_runner}.py` | Unit + E2E harness + 5 câu hỏi E2E |
@@ -155,6 +155,26 @@
 | 27 | Cùng lớp bug tiềm ẩn ở client: `env_setup.REPO_ROOT = CLIENT_DIR.parents[1]`, `agent.py` dùng `parents[3]` | Đếm cấp thư mục cố định — vỡ nếu layout đổi | Thay bằng `find_repo_root()` tìm gốc repo theo **dấu hiệu** (`requirements.txt`/`.git`), chịu được mọi độ sâu; `agent.py` dùng lại `env_setup.REPO_ROOT` |
 | 28 | Chốt chống "PASS giả" `test_tool_result_capture_is_not_vacuous` FAIL khi cả 5 câu E2E đều lỗi tạm thời | Guard yêu cầu `observed > 0` kể cả khi không câu nào chạy được | Rỗng trên câu **đã hoàn tất** → FAIL; rỗng vì **mọi câu lỗi tạm thời** → SKIP ("KHÔNG phải PASS") |
 | 29 | Test mới của tôi không portable: assert `Path("/app/.env") == candidates[0]` | Trên Windows `Path.resolve()` gắn thêm ổ đĩa của thư mục hiện hành | So sánh `.name` và **số lượng** ứng viên thay vì đường dẫn tuyệt đối |
+
+### C2c. Bug phát hiện ở vòng hoàn thiện cuối cùng
+
+| # | Bug | Nguyên nhân gốc | Cách sửa |
+|---|---|---|---|
+| 30 | `_format_current()` **crash** khi `current.condition` là chuỗi (không phải object lồng) | `_val(current.get("condition") or {}, "text")` → `_val("Cloudy", "text")` gọi `.get` trên `str` → `AttributeError` | `_val()` nay từ chối mọi `mapping` không phải dict; thêm `_condition()` chấp nhận cả object lồng **và** chuỗi |
+| 31 | `_format_current()` / `_format_forecast()` **crash** khi `location.name/region/country` không phải chuỗi | `", ".join((name, region, country))` → `TypeError` nếu là số/list/dict | Thêm `_place()` + `_str_or_empty()` chuẩn hoá an toàn, fallback `"?"` |
+| 32 | `_format_forecast()` **báo thành công với dự báo RỖNG** | `forecastday` chỉ được kiểm tra "truthy"; nếu là dict/chuỗi thì vòng lặp chạy qua key/ký tự, mọi entry bị `continue` → trả về **chỉ mỗi dòng tiêu đề** | Bắt buộc `forecastday` là `list` không rỗng; thêm `_day_is_readable()` (phải có ít nhất 1 field số liệu thật); không có block nào → **báo lỗi**, không báo thành công |
+| 33 | `_format_current()` trả về trang "toàn không rõ" cho payload vô dụng | Chỉ kiểm tra `current` là dict không rỗng | Yêu cầu có ít nhất một field trong `_CURRENT_FIELDS` đọc được; nếu không → báo lỗi |
+| 34 | `health_check()` **nói sai transport** | `"transport": "streamable-http"` hard-code dù server có thể chạy stdio/sse; `endpoint` luôn là URL HTTP | Thêm `ACTIVE_TRANSPORT` + `set_active_transport()` (gọi trong `__main__`) + `current_transport()`; `endpoint` là `null` khi không phải HTTP |
+| 35 | Tiếng ồn socket trong test harness | `MockWeatherAPI` chỉ bắt `BrokenPipeError`/`ConnectionResetError`; Windows ném `ConnectionAbortedError [WinError 10053]` | Bắt `OSError` (lớp cha của cả ba) |
+
+**Cải tiến quy trình (yêu cầu item 6):** thêm `.github/workflows/ci.yml` — 3 job chạy
+**offline hoàn toàn** (không cần `GOOGLE_API_KEY`/`WEATHERAPI_KEY`, không tiêu quota):
+`modules-01-03` (pip + compileall + pytest 96 test), `lab-mcp-server` (uv + pytest 139
+test), `lab-mcp-client` (uv + pytest 43 pass/13 skip + khởi động MCP server không key +
+`verify_setup.py --no-network`). Test E2E gọi Gemini thật **không** chạy trong CI.
+
+**Dọn dẹp (yêu cầu item 5):** xoá `04-lab/mcp-server/.DS_Store` khỏi Git và đĩa
+(`.gitignore` đã có `**/.DS_Store` để không tái phát).
 
 ### C3. Tài liệu sai đã được sửa
 

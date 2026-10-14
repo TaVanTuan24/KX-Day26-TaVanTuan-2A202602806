@@ -10,7 +10,7 @@ dữ liệu thời tiết từ WeatherAPI.
 | [`01-function-calling`](01-function-calling/) | Function Calling thuần với Gemini SDK | Gemini (tuỳ chọn) | ✅ Unit test 29/29 (offline) |
 | [`02-mcp-basics`](02-mcp-basics/) | MCP server + client qua stdio | Không | ✅ Integration 12/12 (stdio thật) |
 | [`03-production`](03-production/) | Auth (HTTP), Tool Registry, Versioning | Không | ✅ Auth 8/8, Registry 29/29, Versioning 18/18 |
-| [`04-lab`](04-lab/) | ADK agent + WeatherMCP (Streamable HTTP) + WeatherAPI | Gemini + WeatherAPI | ✅ Server 68/68, client 43+13 skip, **E2E 13/13 với dữ liệu THẬT** |
+| [`04-lab`](04-lab/) | ADK agent + WeatherMCP (Streamable HTTP) + WeatherAPI | Gemini + WeatherAPI | ✅ Server 139/139, client 43+13 skip (56 collected), **E2E 13/13 với dữ liệu THẬT** |
 
 > **Kết quả thực nghiệm đầy đủ (kèm các phần CHƯA xác minh):**
 > [`reports/test-results.md`](reports/test-results.md) ·
@@ -90,6 +90,7 @@ KX-Day26-TaVanTuan-2A202602806/
 ├── requirements-dev.txt          ← pytest
 ├── pytest.ini                    ← cấu hình test suite gốc
 ├── .env.example                  ← mẫu cấu hình cho module 01–03
+├── .github/workflows/ci.yml      ← CI offline (không cần API key)
 │
 ├── 01-function-calling/
 │   ├── README.md
@@ -115,7 +116,7 @@ KX-Day26-TaVanTuan-2A202602806/
 │   │   ├── weather.py
 │   │   ├── Dockerfile            .dockerignore, .env.example
 │   │   ├── pyproject.toml / uv.lock
-│   │   └── tests/                65 test (unit + MCP stdio + MCP HTTP)
+│   │   └── tests/                139 test (unit + MCP stdio + MCP HTTP)
 │   └── mcp-client/               Google ADK agent (McpToolset)
 │       ├── weather_agent/
 │       │   ├── agent.py
@@ -481,21 +482,33 @@ và script vẫn thoát 0 nếu không có FAIL.
 Môi trường: Windows 11, Python 3.12.13, mcp 2.3.0 (01–03) / mcp 1.28.1 + ADK 2.3.0
 (04), Docker 29.8.2.
 
-| Nhóm test | Kết quả |
+| Nhóm test | Số test thu thập | Kết quả (E2E tắt / không cần key) |
+|---|---|---|
+| `tests/` (01–03) | **96** | ✅ **96 passed** |
+| `04-lab/mcp-server/tests/` | **139** | ✅ **139 passed** |
+| `04-lab/mcp-client/tests/` | **56** | ✅ **43 passed, 13 skipped** (13 test E2E tự tắt) |
+| **Tổng** | **291** | ✅ **278 passed, 13 skipped, 0 FAIL** |
+
+| Kiểm tra cần key/quota | Kết quả |
 |---|---|
-| `tests/` (01–03) | **96 passed** |
-| `04-lab/mcp-server/tests/` | **68 passed** |
-| `04-lab/mcp-client/tests/` (E2E tắt) | **43 passed**, 13 skipped |
-| `04-lab/mcp-client/tests/` (`DAY26_E2E=1`, **dữ liệu thật**) | ✅ **55 passed** (0 FAIL) khi Gemini thông; **47 passed + 9 skipped, 0 FAIL** khi key bị chặn IP |
-| `verify_setup.py` (server + key thật) | ✅ **PASS=9, FAIL=0, NOT VERIFIED=0** |
+| `04-lab/mcp-client/tests/` với `DAY26_E2E=1` | ✅ cả 56 chạy; E2E 13/13 **với dữ liệu THẬT** (đã xác minh trước đó) |
+| `verify_setup.py` (server + WeatherAPI key thật) | ✅ **PASS=9, FAIL=0, NOT VERIFIED=0** |
+| `verify_setup.py --no-network` (không có key, như CI) | ✅ **PASS=7, FAIL=0, NOT VERIFIED=2**, exit 0 |
 | Docker build + chạy container + MCP handshake | ✅ thành công; container có key thật trả **Hà Nội 29.9°C / Cloudy**; không có secret trong image |
 | **WeatherAPI dữ liệu THẬT** | ✅ **VERIFIED** — Hà Nội **31.6°C / Cloudy** (ngoài container), **29.9°C** (trong container), Đà Nẵng **3 ngày** dự báo thật |
 | **E2E toàn chuỗi (User→Gemini→ADK→MCP→WeatherAPI→Gemini→User)** | ✅ **VERIFIED** — 13/13, `mode=real-weatherapi`, Hà Nội 31.6°C vs HCM 29.5°C |
 | Gemini API | ✅ VERIFIED (key bị giới hạn IP → độ ổn định thay đổi theo IP egress) |
+| GitHub Actions (`.github/workflows/ci.yml`) | ⚠️ **CHƯA CHẠY ĐƯỢC** — chỉ xác thực YAML hợp lệ và mô phỏng từng bước ở local; chưa push nên chưa có lần chạy thật trên GitHub |
 
-**Các mục chưa xác minh:** Cloud Run deploy (không deploy để tránh phát sinh chi
-phí) và tương tác thủ công trên UI `adk web` (E2E chạy qua `InMemoryRunner` cùng
-`root_agent`). Chi tiết đầy đủ: [`reports/test-results.md`](reports/test-results.md).
+> **Vì sao số test tăng qua các lần?** Không có test nào bị xoá — chỉ **thêm** regression
+> test. MCP Server: `65 → 66` (thêm test nạp `.env`) `→ 68` (2 test đường dẫn nông Docker)
+> `→ **139**` (71 test cho nested JSON sai kiểu + `health_check` transport).
+> MCP Client: `55 → **56**` (thêm `test_find_repo_root_uses_markers_not_depth`).
+
+**Các mục chưa xác minh:** chạy GitHub Actions thật trên GitHub (chưa push), Cloud Run
+deploy (không deploy để tránh phát sinh chi phí) và tương tác thủ công trên UI `adk web`
+(E2E chạy qua `InMemoryRunner` cùng `root_agent`).
+Chi tiết đầy đủ: [`reports/test-results.md`](reports/test-results.md).
 
 ---
 

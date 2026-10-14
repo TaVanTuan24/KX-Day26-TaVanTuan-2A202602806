@@ -153,7 +153,7 @@ Mã thoát: `0` nếu không có FAIL. NOT VERIFIED **không** bị coi là PASS
 ## Chạy test
 
 ```powershell
-# Server (68 test: unit + mock WeatherAPI + MCP stdio + MCP HTTP + nạp .env)
+# Server (139 test: unit + mock WeatherAPI + MCP stdio + MCP HTTP + nested JSON + .env)
 cd mcp-server
 uv run --with pytest pytest tests -q
 
