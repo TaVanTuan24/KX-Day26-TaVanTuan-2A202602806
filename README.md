@@ -498,14 +498,14 @@ Môi trường: Windows 11, Python 3.12.13, mcp 2.3.0 (01–03) / mcp 1.28.1 + A
 | **WeatherAPI dữ liệu THẬT** | ✅ **VERIFIED** — Hà Nội **31.6°C / Cloudy** (ngoài container), **29.9°C** (trong container), Đà Nẵng **3 ngày** dự báo thật |
 | **E2E toàn chuỗi (User→Gemini→ADK→MCP→WeatherAPI→Gemini→User)** | ✅ **VERIFIED** — 13/13, `mode=real-weatherapi`, Hà Nội 31.6°C vs HCM 29.5°C |
 | Gemini API | ✅ VERIFIED (key bị giới hạn IP → độ ổn định thay đổi theo IP egress) |
-| GitHub Actions (`.github/workflows/ci.yml`) | ⚠️ **CHƯA CHẠY ĐƯỢC** — chỉ xác thực YAML hợp lệ và mô phỏng từng bước ở local; chưa push nên chưa có lần chạy thật trên GitHub |
+| GitHub Actions (`.github/workflows/ci.yml`) | ✅ **VERIFIED** — run [#1](https://github.com/TaVanTuan24/KX-Day26-TaVanTuan-2A202602806/actions/runs/38622142312) trên commit `5f3763f`: **3/3 job PASS** (`modules-01-03`, `lab-mcp-server`, `lab-mcp-client` kèm `verify_setup --no-network`), hoàn toàn offline |
 
 > **Vì sao số test tăng qua các lần?** Không có test nào bị xoá — chỉ **thêm** regression
 > test. MCP Server: `65 → 66` (thêm test nạp `.env`) `→ 68` (2 test đường dẫn nông Docker)
 > `→ **139**` (71 test cho nested JSON sai kiểu + `health_check` transport).
 > MCP Client: `55 → **56**` (thêm `test_find_repo_root_uses_markers_not_depth`).
 
-**Các mục chưa xác minh:** chạy GitHub Actions thật trên GitHub (chưa push), Cloud Run
+**Các mục chưa xác minh:** Cloud Run
 deploy (không deploy để tránh phát sinh chi phí) và tương tác thủ công trên UI `adk web`
 (E2E chạy qua `InMemoryRunner` cùng `root_agent`).
 Chi tiết đầy đủ: [`reports/test-results.md`](reports/test-results.md).

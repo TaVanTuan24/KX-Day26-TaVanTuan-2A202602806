@@ -282,7 +282,7 @@ không còn traceback giả.
 | Nested JSON sai kiểu (current/forecast) | ✅ **VERIFIED** | 71 test mới + probe trực tiếp; không còn crash, không còn "thành công rỗng" |
 | `health_check()` báo đúng transport | ✅ **VERIFIED** | Unit (stdio/sse/http/unknown) + integration thật ở cả stdio và HTTP |
 | `verify_setup.py` không cần key (như CI) | ✅ **VERIFIED** | Server **không có** key + Google key giả → `PASS=7, FAIL=0, NOT VERIFIED=2`, **exit 0** |
-| GitHub Actions workflow | ⚠️ **CHƯA CHẠY THẬT** | YAML hợp lệ (đã parse), từng bước đã mô phỏng ở local; **chưa push nên chưa có run nào trên GitHub** |
+| GitHub Actions workflow | ✅ **VERIFIED** | Run [#1](https://github.com/TaVanTuan24/KX-Day26-TaVanTuan-2A202602806/actions/runs/38622142312) trên `5f3763f`: `conclusion=success`, **3/3 job PASS** (`modules-01-03` 96 test, `lab-mcp-server` 139 test, `lab-mcp-client` 43+13skip + MCP server không key + `verify_setup --no-network`) |
 | Cloud Run deploy | ➖ **NOT ATTEMPTED** | Không deploy để tránh phát sinh chi phí |
 | `adk web` UI | ➖ **NOT AUTOMATED** | E2E dùng `InMemoryRunner` cùng `root_agent`; `verify_setup` xác minh import + kết nối |
 

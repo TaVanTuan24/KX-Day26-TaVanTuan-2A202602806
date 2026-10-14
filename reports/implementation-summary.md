@@ -172,6 +172,8 @@
 `modules-01-03` (pip + compileall + pytest 96 test), `lab-mcp-server` (uv + pytest 139
 test), `lab-mcp-client` (uv + pytest 43 pass/13 skip + khởi động MCP server không key +
 `verify_setup.py --no-network`). Test E2E gọi Gemini thật **không** chạy trong CI.
+Đã xác minh thật trên GitHub: run [#1](https://github.com/TaVanTuan24/KX-Day26-TaVanTuan-2A202602806/actions/runs/38622142312)
+(commit `5f3763f`) — `conclusion=success`, **3/3 job PASS**.
 
 **Dọn dẹp (yêu cầu item 5):** xoá `04-lab/mcp-server/.DS_Store` khỏi Git và đĩa
 (`.gitignore` đã có `**/.DS_Store` để không tái phát).
