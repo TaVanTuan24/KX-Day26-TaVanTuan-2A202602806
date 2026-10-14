@@ -1,0 +1,12 @@
+# Dependencies chỉ dùng cho TEST của module 01–03 (không cần để chạy demo).
+#
+#   python -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt   # Windows
+#   pip install -r requirements.txt -r requirements-dev.txt                                # Linux/macOS
+#
+# Test của Lab 04 KHÔNG dùng file này: mỗi thư mục trong 04-lab có môi trường uv
+# riêng. Chạy bằng:
+#   cd 04-lab/mcp-server && uv run --with pytest pytest tests -q
+#   cd 04-lab/mcp-client && uv run --with pytest pytest tests -q
+
+pytest>=8.0

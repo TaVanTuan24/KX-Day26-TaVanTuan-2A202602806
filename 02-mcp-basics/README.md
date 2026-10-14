@@ -14,25 +14,48 @@ weather_client.py                       weather_server.py
 
 ## Cách chạy (không cần API key)
 
-```bash
-pip install -r ../requirements.txt
+```powershell
+pip install -r ..\requirements.txt
 python weather_client.py     # client tự khởi động weather_server.py
+```
+
+Client dùng đường dẫn server tính từ `__file__`, nên chạy được từ **bất kỳ thư
+mục nào**:
+
+```powershell
+python 02-mcp-basics\weather_client.py
 ```
 
 Kết quả mong đợi:
 
 ```
+✅ Bắt tay MCP thành công: weather v1.0.0
+   protocolVersion: 2025-11-25
+
 Tools server cung cấp:
   - get_weather: Lấy thời tiết hiện tại của một thành phố.
+      schema tự sinh: {"properties": {"city": {"type": "string"}}, "required": ["city"], "type": "object"}
 
-call_tool get_weather(city='Hanoi'):
+✅ call_tool get_weather(city='Hanoi'):
   -> Hanoi: 29°C, trời mưa
 
-call_tool get_weather(city='Danang'):
+✅ call_tool get_weather(city='Danang'):
   -> Danang: 30°C, nhiều mây
 
-call_tool get_weather(city='Haiphong'):
+✅ call_tool get_weather(city='Haiphong'):
   -> Haiphong: 33°C, mưa rào
+
+--- Kiểm tra xử lý lỗi (các lỗi này là CỐ Ý) ---
+  [thiếu tham số bắt buộc] is_error=True
+      Error executing tool get_weather: 1 validation error for get_weatherArguments
+  [sai kiểu tham số] is_error=True
+      Error executing tool get_weather: 1 validation error for get_weatherArguments
+  [tool không tồn tại] is_error=True
+      Unknown tool: khong_ton_tai
+  [vi phạm nghiệp vụ (city rỗng)] is_error=True
+      Error executing tool get_weather: Tên thành phố không được để trống
+
+✅ Tất cả lời gọi tool đều thành công.
 ```
 
 ## Files
@@ -41,6 +64,39 @@ call_tool get_weather(city='Haiphong'):
 |---|---|
 | `weather_server.py` | MCP server — `@mcp.tool()` tự sinh schema từ type hints + docstring |
 | `weather_client.py` | MCP client — `list_tools` + `call_tool` qua stdio transport |
+| `../../tests/test_02_mcp_stdio.py` | 12 integration test (MCP server thật qua stdio) |
+
+---
+
+## Hai điểm dễ sai khi viết MCP server
+
+### 1. `print()` ra stdout sẽ phá giao thức stdio
+
+Khi transport là `stdio`, **stdout chính là kênh JSON-RPC**. Một dòng `print()`
+làm client không parse được và mất kết nối. Mọi thông báo phải đi ra
+`sys.stderr` (hoặc `logging`).
+
+Repo có test khẳng định điều này — nó nói chuyện RAW bằng JSON-RPC và parse
+**từng dòng** stdout:
+
+```powershell
+python -m pytest tests/test_02_mcp_stdio.py::test_stdio_stdout_carries_only_jsonrpc -q
+```
+
+### 2. Lỗi nghiệp vụ nên `raise ToolError`, không phải `ValueError`
+
+| Cách | Client nhận được | Log server |
+|---|---|---|
+| `raise ToolError("...")` | `is_error=True`, thông báo gọn | Sạch |
+| `raise ValueError("...")` | `is_error=True` | ERROR + traceback đầy đủ |
+
+Cả hai đều **không** làm sập client — nhưng `ToolError`
+(`mcp.server.mcpserver.exceptions.ToolError`) là cách đúng cho lỗi nghiệp vụ.
+
+> Client cũng phải chịu được lỗi tầng schema (thiếu tham số, sai kiểu) và lỗi
+> giao thức (`Unknown tool`) — `weather_client.py` xử lý cả ba nhóm và **không
+> sập**. Lưu ý: `call_tool` **không raise** cho các lỗi này ở MCP SDK v2; nó trả
+> về `CallToolResult` với `is_error=True`. (mcp 1.x dùng tên `isError`.)
 
 ---
 

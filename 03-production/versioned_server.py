@@ -10,6 +10,8 @@ sẽ bị break nếu không có chiến lược versioning. Ví dụ này minh 
 Cách chạy:
     pip install -r ../requirements.txt
     python versioned_server.py
+
+⚠️ Chạy qua stdio: stdout là kênh JSON-RPC, không `print()` ra stdout.
 """
 
 from __future__ import annotations
@@ -20,15 +22,19 @@ from datetime import datetime, timezone
 from mcp.server.mcpserver import MCPServer
 
 SERVER_VERSION = "2.0.0"
+SUPPORTED_UNITS = ("celsius", "fahrenheit")
 
 mcp = MCPServer(
     "weather-v2",
+    version=SERVER_VERSION,
     instructions=f"Weather MCP Server v{SERVER_VERSION}. "
     "Hỗ trợ get_weather (v1, backward compat) và get_weather_v2 (chi tiết hơn).",
+    log_level="WARNING",
 )
 
-_MOCK_DB = {
-    "Hanoi": {
+# Key đã chuẩn hoá (casefold) để "Hanoi"/"hanoi" đều khớp.
+_MOCK_DB: dict[str, dict] = {
+    "hanoi": {
         "temp": 29,
         "condition": "trời mưa",
         "humidity": 82,
@@ -38,7 +44,7 @@ _MOCK_DB = {
             {"day": "day_after", "temp": 31, "condition": "nắng"},
         ],
     },
-    "Danang": {
+    "danang": {
         "temp": 30,
         "condition": "nhiều mây",
         "humidity": 78,
@@ -50,12 +56,20 @@ _MOCK_DB = {
     },
 }
 
+DEPRECATED_TOOLS = ["get_weather"]
+
+
+def _lookup(city: str) -> dict | None:
+    if not isinstance(city, str):
+        return None
+    return _MOCK_DB.get(city.strip().casefold())
+
 
 # ── Tool v1 (giữ nguyên cho backward compatibility) ──────────────────
 @mcp.tool()
 def get_weather(city: str) -> str:
     """[v1] Lấy thời tiết hiện tại — trả chuỗi đơn giản. Deprecated, dùng get_weather_v2."""
-    data = _MOCK_DB.get(city)
+    data = _lookup(city)
     if data:
         return f"{city}: {data['temp']}°C, {data['condition']}"
     return f"{city}: 28°C, không có dữ liệu chi tiết"
@@ -75,7 +89,19 @@ def get_weather_v2(
         include_forecast: Có trả thêm dự báo 2 ngày tới không (mặc định: False)
         units: Đơn vị nhiệt độ — "celsius" hoặc "fahrenheit" (mặc định: celsius)
     """
-    data = _MOCK_DB.get(city)
+    normalized_units = units.strip().lower() if isinstance(units, str) else units
+    if normalized_units not in SUPPORTED_UNITS:
+        return json.dumps(
+            {
+                "city": city,
+                "error": f"units không hợp lệ: {units!r}",
+                "supported_units": list(SUPPORTED_UNITS),
+                "api_version": "2.0",
+            },
+            ensure_ascii=False,
+        )
+
+    data = _lookup(city)
     if not data:
         return json.dumps(
             {"city": city, "error": "không có dữ liệu", "api_version": "2.0"},
@@ -83,14 +109,14 @@ def get_weather_v2(
         )
 
     temp = data["temp"]
-    if units == "fahrenheit":
+    if normalized_units == "fahrenheit":
         temp = round(temp * 9 / 5 + 32, 1)
 
     result: dict = {
         "api_version": "2.0",
         "city": city,
         "temp": temp,
-        "units": units,
+        "units": normalized_units,
         "condition": data["condition"],
         "humidity": data["humidity"],
         "wind_speed_kmh": data["wind_speed"],
@@ -110,7 +136,8 @@ def server_info() -> str:
         {
             "name": "weather-v2",
             "version": SERVER_VERSION,
-            "deprecated_tools": ["get_weather"],
+            "tools": ["get_weather", "get_weather_v2"],
+            "deprecated_tools": DEPRECATED_TOOLS,
             "migration_guide": "Chuyển từ get_weather sang get_weather_v2. "
             "Tham số 'city' giữ nguyên, thêm include_forecast và units.",
         },

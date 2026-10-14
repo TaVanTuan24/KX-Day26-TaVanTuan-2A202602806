@@ -7,3 +7,9 @@ venv/
 .adk/
 *.db
 **/.DS_Store
+
+# Công cụ test / build sinh ra (không commit)
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/

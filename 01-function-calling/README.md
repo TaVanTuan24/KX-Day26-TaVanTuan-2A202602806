@@ -13,19 +13,77 @@ User hỏi  →  Model quyết định gọi get_weather(city="Hà Nội")
               Model tổng hợp câu trả lời
 ```
 
+> ⚠️ Dữ liệu thời tiết trong bài này là **MOCK**. Đây là bài học minh hoạ *cơ chế*
+> function calling, không phải một weather service. Muốn dữ liệu thật, xem
+> [`04-lab/`](../04-lab/).
+
 ## Cách chạy
+
+**Windows PowerShell**
+
+```powershell
+pip install -r ..\requirements.txt
+$env:GOOGLE_API_KEY = "key-cua-ban"        # hoặc GEMINI_API_KEY
+python weather_function_calling.py
+python weather_function_calling.py "Thời tiết Đà Nẵng thế nào?"
+```
+
+**Linux / macOS**
 
 ```bash
 pip install -r ../requirements.txt
-export GEMINI_API_KEY=...
+export GOOGLE_API_KEY=...
 python weather_function_calling.py
 ```
+
+Script cũng tự nạp `.env` ở thư mục gốc repo **nếu** `python-dotenv` có sẵn
+(không bắt buộc).
+
+**Không có API key?** Script chạy chế độ **offline**: in rõ nhãn `[OFFLINE]`, dùng
+dữ liệu mock, và **không gọi model** — để không ai nhầm là Gemini đã trả lời.
 
 ## File
 
 | File | Mô tả |
 |---|---|
-| `weather_function_calling.py` | Định nghĩa schema, thực thi tool, gọi model Gemini, xử lý vòng lặp function calling |
+| `weather_function_calling.py` | Schema, thực thi tool, gọi Gemini, xử lý vòng lặp function calling |
+| `../../tests/test_01_function_calling.py` | 29 unit test (không cần API key, không gọi mạng) |
+
+## Kết quả mong đợi
+
+```
+User: Thời tiết Hà Nội và Đà Nẵng hôm nay thế nào?
+
+  [model yêu cầu] get_weather({'city': 'Hà Nội'})
+  [app thực thi]  -> {"city": "Hà Nội", "nhiệt_độ": "29°C", ...}
+  [model yêu cầu] get_weather({'city': 'Đà Nẵng'})
+  [app thực thi]  -> {"city": "Đà Nẵng", "nhiệt_độ": "30°C", ...}
+
+Trả lời:
+ Hà Nội 29°C, trời mưa nhẹ 🌧️ ...
+ Đà Nẵng 30°C, nhiều mây 🌤️ ...
+```
+
+Không có key:
+
+```
+⚠️  Chưa có GOOGLE_API_KEY/GEMINI_API_KEY → chạy chế độ OFFLINE (dữ liệu mock, không gọi model).
+
+Trả lời:
+[OFFLINE — chưa có GOOGLE_API_KEY/GEMINI_API_KEY, không gọi Gemini]
+
+Hà Nội: 29°C, trời mưa nhẹ 🌤️ (dữ liệu MOCK, không phải real-time). ...
+```
+
+## Chạy test
+
+```powershell
+# từ thư mục gốc repo
+.\.venv\Scripts\python.exe -m pytest tests/test_01_function_calling.py -q
+```
+
+Test dùng **client Gemini giả** để kiểm tra vòng lặp function calling, nên chạy
+được hoàn toàn offline.
 
 ---
 
@@ -163,11 +221,32 @@ def get_weather(city: str) -> str:
 **Phần 3 — Vòng lặp** (nhận yêu cầu → chạy → trả lại):
 
 ```python
-while resp.function_calls:
-    for fc in resp.function_calls:
-        result = get_weather(**fc.args)   # ← APP chạy, không phải model
-    # gửi result lại cho model để tổng hợp câu trả lời
+for round_index in range(max_tool_rounds + 1):
+    resp = client.models.generate_content(model=MODEL, contents=contents, config=config)
+    if not resp.function_calls:
+        return resp.text                      # câu trả lời cuối
+    if round_index >= max_tool_rounds:
+        raise MaxToolRoundsExceeded(...)      # chặn vòng lặp vô hạn
+    contents.append(resp.candidates[0].content)
+    for fc in resp.function_calls:            # hỗ trợ NHIỀU call một lượt
+        result = execute_function_call(fc.name, fc.args)   # ← APP chạy
+    contents.append(types.Content(role="user", parts=function_responses))
 ```
+
+**Xử lý lỗi & giới hạn (điểm quan trọng khi lên production):**
+
+| Tình huống | Hành vi |
+|---|---|
+| Model gọi tên function không tồn tại | Trả JSON `{"error": ..., "available_functions": [...]}` để model tự sửa |
+| Tham số thiếu / thừa / sai kiểu | Trả JSON `{"error": "tham số không hợp lệ..."}` (không crash) |
+| Function ném exception | Bắt và trả JSON lỗi kèm tên loại exception |
+| Lỗi gọi Gemini API (key/quota/mạng) | In thông báo thân thiện, **che API key** khỏi thông báo lỗi |
+| Model liên tục đòi gọi tool | Dừng sau `MAX_TOOL_ROUNDS = 5` vòng, raise `MaxToolRoundsExceeded` |
+| Model trả về rỗng (bị chặn) | Thông báo rõ thay vì `None` |
+
+> Cách trả lỗi dạng `{"error": ...}` thay vì raise là **đúng quy ước của
+> google-genai**: SDK tự làm y hệt trong `_extra_utils.get_function_response_parts`.
+> Nhờ vậy model *đọc được* lỗi và giải thích lại cho người dùng.
 
 ---
 

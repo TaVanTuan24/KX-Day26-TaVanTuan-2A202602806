@@ -25,34 +25,77 @@
 
 Server chạy qua **Streamable HTTP** thay vì stdio, kèm bearer token verification.
 
-```bash
+```powershell
 # Terminal 1 — khởi động server
-python auth_server.py
-# Server lắng nghe tại http://localhost:8000/mcp
+cd 03-production
+$env:PORT = 8090        # 8000 có thể bị Docker Desktop chiếm trên Windows
+..\.venv\Scripts\python.exe auth_server.py
+# Server lắng nghe tại http://127.0.0.1:8090/mcp
 
 # Terminal 2 — client kết nối kèm token
-python auth_client.py
+$env:MCP_SERVER_URL = "http://127.0.0.1:8090/mcp"
+..\.venv\Scripts\python.exe auth_client.py
 ```
 
-Luồng:
+### ⚠️ Sửa lại tài liệu: token sai KHÔNG trả 403
+
+Bản README trước ghi *"Thiếu token → 401, Token sai → 403"*. **Đo thực tế trên
+MCP SDK v2 (mcp 2.3.0) cho kết quả khác:**
+
+| Tình huống | Status thực tế | `WWW-Authenticate` |
+|---|---|---|
+| Không có token | **401** | `Bearer error="invalid_token"` |
+| Token sai | **401** | `Bearer error="invalid_token"` |
+| Token xác thực đúng nhưng **thiếu scope** | **403** | `Bearer error="insufficient_scope", error_description="Required scope: weather:read"` |
+| Token hợp lệ | **200** | — |
+| Header sai scheme (`Basic ...`) | **401** | `Bearer error="invalid_token"` |
+
+Điều này **đúng theo RFC 6750**: token không xác minh được là lỗi *xác thực*
+(401); 403 dành cho trường hợp đã xác thực nhưng *thiếu quyền*.
+
+Vì vậy repo hiện hiện thực **cả hai** để phân biệt rõ:
+
+```python
+AuthSettings(
+    issuer_url=PUBLIC_URL,
+    resource_server_url=PUBLIC_URL,
+    validate_token_resource=False,   # verifier tĩnh KHÔNG kiểm tra audience
+    required_scopes=["weather:read"],# AUTHORIZATION: thiếu scope → 403
+)
+```
+
+Token demo (chỉ dùng local):
+
+| Token | client_id | scopes | Dùng để |
+|---|---|---|---|
+| `dev-token-abc123` | dev-user | `weather:read` | Ca hợp lệ (200) |
+| `demo-client-key-xyz789` | service-user | `weather:read` | Ca hợp lệ (200) |
+| `demo-no-scope-token` | limited-client | *(rỗng)* | Ca **403** insufficient_scope |
+
+`auth_client.py` tự đo và in ra 4 status code thật, nên bạn thấy ngay kết quả
+trên máy mình thay vì phải tin vào tài liệu.
 
 ```
-Client                                Server
-  │                                      │
-  │── POST /mcp ──────────────────────▶  │
-  │   Authorization: Bearer <token>      │
-  │                                      │── TokenVerifier.verify_token()
-  │                                      │   token hợp lệ → AccessToken
-  │◀── 200 OK (tools, results) ────────  │
-  │                                      │
-  │── POST /mcp (token sai) ──────────▶  │
-  │◀── 401 Unauthorized ───────────────  │
+--- Đo status code thật (không giả định) ---
+  ✅ không có token: HTTP 401 (kỳ vọng 401) — AUTHENTICATION thiếu → 401
+       WWW-Authenticate: Bearer error="invalid_token", ...
+  ✅ token sai: HTTP 401 (kỳ vọng 401) — AUTHENTICATION sai → 401
+  ✅ token hiệu lực, thiếu scope: HTTP 403 (kỳ vọng 403) — AUTHORIZATION thiếu scope → 403
+       WWW-Authenticate: Bearer error="insufficient_scope", error_description="Required scope: weather:read"
+  ✅ token hợp lệ: HTTP 200 (kỳ vọng 200) — hợp lệ → 200
 ```
 
-- Token hợp lệ → truy cập tool bình thường
-- Thiếu token → `401`
-- Token sai → `403`
-- Logic tool không biết gì về auth — SDK xử lý ở tầng transport
+### ⚠️ Điểm yếu đã biết của demo
+
+- Token là **hằng số trong source** → ai đọc repo là có token.
+- Không có expiry, không refresh, **không thu hồi được**.
+- Mọi token hợp lệ có cùng quyền (chỉ tách được theo scope, không theo tool).
+- Không rate-limit, không audit log.
+- `validate_token_resource=False` nghĩa là **không kiểm tra audience** — token
+  phát cho resource khác vẫn được chấp nhận. Việc này phải do verifier thật
+  (JWT có chữ ký / OAuth introspection) đảm nhiệm.
+
+Production thật phải dùng JWT có chữ ký + expiry, OAuth 2.1, hoặc mTLS.
 
 ---
 
@@ -107,6 +150,47 @@ connect_and_call()  ← tự kết nối đúng transport (stdio/HTTP) + auth
 
 `registry.json` là **tool-centric** — đơn vị khám phá là tool (tag, description, parameters), không phải server. Production thay JSON bằng DB/API với semantic search.
 
+### Xử lý lỗi
+
+`ToolRegistry` **không giả định registry luôn đúng**. Mọi nhánh lỗi đều có
+exception riêng (`RegistryError`) và được test:
+
+| Tình huống | Hành vi |
+|---|---|
+| File registry không tồn tại | `RegistryError: Không tìm thấy registry: ...` |
+| JSON không hợp lệ | `RegistryError: registry.json không phải JSON hợp lệ (...)` |
+| Thiếu mục `tools` / `servers`, hoặc sai kiểu | `RegistryError` nêu rõ mục thiếu |
+| Entry tool thiếu field | Bỏ qua / dùng default (`version="0.0.0"`) — một entry hỏng không làm sập cả registry |
+| `version` rác (`"not-a-version"`) | Coi như `0.0.0` thay vì crash |
+| Không tìm thấy tool theo tag/keyword | `RegistryError: Không tìm thấy tool ...` |
+| Tool trỏ tới server không có trong registry | `RegistryError: ... không có trong mục 'servers'` |
+| Transport lạ (`"carrier-pigeon"`) | `RegistryError: Transport không được hỗ trợ` |
+| Script stdio không tồn tại trên đĩa | `RegistryError: Server script không tồn tại` |
+| Server HTTP thiếu biến token | `RegistryError: ... biến môi trường X chưa được đặt` |
+
+`best_match` chọn theo **semantic version** (không so chuỗi: `10.0.0 > 9.0.0`)
+và **ưu tiên tool không deprecated**.
+
+### ⚠️ Endpoint minh hoạ — KHÔNG được gọi như thể đang chạy
+
+`registry.json` có 2 entry minh hoạ trỏ tới endpoint nội bộ **không tồn tại**:
+
+| Tool | Server | URL |
+|---|---|---|
+| `send_email` | `email-service` | `http://internal-email:9000/mcp` |
+| `query_db` | `db-gateway` | `http://internal-db:9100/mcp` |
+
+Chúng chỉ để cho thấy registry chứa được nhiều loại tool. `registry_client.py`
+**không gọi** chúng và in rõ cảnh báo. Nếu bạn cố gọi, nó sẽ **lỗi rõ ràng**
+(`RegistryError`) chứ không âm thầm "coi như thành công" — có test khẳng định
+điều này.
+
+### Test
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_03_registry.py -q   # 29 test
+```
+
 ---
 
 ## 3c. Versioning & Backward Compatibility
@@ -122,7 +206,33 @@ python versioned_client.py
 |---|---|
 | **Tool mới song song** | `get_weather_v2` tồn tại bên cạnh `get_weather` — không xoá tool cũ |
 | **Tham số optional** | `include_forecast`, `units` có default → client cũ gọi `get_weather_v2(city="Hanoi")` vẫn đúng |
-| **Server metadata** | Resource `server://info` công bố version, deprecated tools, migration guide |
+| **Server metadata** | Resource `server://info` công bố version, tools, deprecated tools, migration guide |
+
+### Kiểm tra tham số
+
+`units` **được validate** thay vì âm thầm coi như `celsius`:
+
+```json
+{"city": "Hanoi", "error": "units không hợp lệ: 'kelvin'",
+ "supported_units": ["celsius", "fahrenheit"], "api_version": "2.0"}
+```
+
+`units` không phân biệt hoa/thường và bỏ khoảng trắng (`" FAHRENHEIT "` vẫn đúng).
+
+### Test
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_03_versioning.py -q   # 18 test
+```
+
+Test chạy MCP server **thật** qua stdio và khẳng định:
+
+- `get_weather` (v1) trả **đúng nguyên** định dạng chuỗi cũ → backward compatible
+- `get_weather_v2(city)` với chỉ tham số bắt buộc dùng đúng default
+- `get_weather_v2(..., include_forecast=True)` thêm danh sách forecast
+- `units="fahrenheit"` đổi 29°C → 84.2°F
+- `units` không hợp lệ trả **payload lỗi JSON**, server **không sập**
+- `server://info` công bố `version`, `tools`, `deprecated_tools`, `migration_guide`
 
 ```
 Server v2
