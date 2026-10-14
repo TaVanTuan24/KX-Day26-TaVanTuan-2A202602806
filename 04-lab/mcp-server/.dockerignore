@@ -1,0 +1,16 @@
+# Không đưa vào build context những thứ không cần cho runtime.
+# Đặc biệt: .venv (hàng trăm MB) và .env (chứa API key!) phải bị loại.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# BÍ MẬT — tuyệt đối không vào image
+.env
+.env.*
+!.env.example
+
+# Rác hệ điều hành / IDE
+.DS_Store
+*.log
